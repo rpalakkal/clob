@@ -1,0 +1,12 @@
+[package]
+name = "clob"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.7.5"
+serde = {version = "1.0.204", features = ["derive"]}
+tokio = { version = "1.38.0", features = ["macros", "rt-multi-thread", "signal"] }
+alloy = { git = "https://github.com/alloy-rs/alloy", version = "0.1.0", features = [
+    "full"
+] }
