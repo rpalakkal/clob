@@ -1,5 +1,7 @@
 use std::collections::{BTreeMap, HashMap, VecDeque};
 
+use eyre::OptionExt;
+
 use crate::order::Order;
 
 pub trait SplitFront<T> {
@@ -41,11 +43,19 @@ fn fill_at_price_level(level: &mut VecDeque<Order>, amount: u64) -> (u64, VecDeq
 
 impl OrderBook {
     pub fn bid_max(&self) -> u64 {
-        self.bids.iter().next_back().unwrap().0.clone()
+        if let Some(level) = self.bids.iter().next_back() {
+            level.0.clone()
+        } else {
+            0
+        }
     }
 
     pub fn ask_min(&self) -> u64 {
-        self.asks.iter().next().unwrap().0.clone()
+        if let Some(level) = self.asks.iter().next() {
+            level.0.clone()
+        } else {
+            u64::MAX
+        }
     }
 
     fn enqueue_order(&mut self, order: Order) {
@@ -59,7 +69,7 @@ impl OrderBook {
         }
     }
 
-    pub async fn limit(&mut self, order: Order) -> Vec<Order> {
+    pub async fn limit(&mut self, order: Order) -> eyre::Result<Vec<Order>> {
         let mut remaining_amount = order.sz;
         let mut ask_min = self.ask_min();
         let mut bid_max = self.bid_max();
@@ -80,9 +90,6 @@ impl OrderBook {
                     }
                 }
             }
-            if remaining_amount > 0 {
-                self.enqueue_order(order);
-            }
         } else {
             if order.limit_px < bid_max {
                 while remaining_amount > 0 && bid_max >= order.limit_px {
@@ -101,18 +108,33 @@ impl OrderBook {
             }
         }
 
-        fills
+        if remaining_amount > 0 {
+            self.enqueue_order(order);
+        } else {
+            fills.push(order);
+        }
+
+        Ok(fills)
     }
 
-    pub async fn cancel(&mut self, oid: u64) {
-        let level_price = self.oid_to_level.get(&oid).unwrap();
+    pub async fn cancel(&mut self, oid: u64) -> eyre::Result<()> {
+        let level_price = self.oid_to_level.get(&oid).ok_or_eyre("oid not found")?;
         if self.bids.contains_key(level_price) {
-            let level = self.bids.get_mut(level_price).unwrap();
+            let level = self
+                .bids
+                .get_mut(level_price)
+                .ok_or_eyre("level not found")?;
             level.retain(|order| order.oid != oid);
         } else if self.asks.contains_key(level_price) {
-            let level = self.asks.get_mut(level_price).unwrap();
+            let level = self
+                .asks
+                .get_mut(level_price)
+                .ok_or_eyre("level not found")?;
             level.retain(|order| order.oid != oid);
+        } else {
+            return Err(eyre::eyre!("oid not found"));
         }
         self.oid_to_level.remove(&oid);
+        Ok(())
     }
 }

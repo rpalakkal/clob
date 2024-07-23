@@ -122,41 +122,26 @@ async fn place_order(
     let mut balances = state.balances.lock().await;
     let addr = req.addr;
     let balance = balances.get_mut(&addr).unwrap();
-    if req.is_buy {
-        if balance.b < req.sz {
-            Json(PlaceOrderResponse {
-                success: false,
-                oid: None,
-            })
-        } else {
-            let mut oid = state.oid.lock().await;
-            let order = req.to_order(*oid);
-            let order_id = order.oid;
-            state.book.lock().await.limit(order).await;
-            *oid += 1;
-            Json(PlaceOrderResponse {
-                success: true,
-                oid: Some(order_id),
-            })
-        }
-    } else {
-        if balance.a < req.sz {
-            Json(PlaceOrderResponse {
-                success: false,
-                oid: None,
-            })
-        } else {
-            let mut oid = state.oid.lock().await;
-            let order = req.to_order(*oid);
-            let order_id = order.oid;
-            state.book.lock().await.limit(order).await;
-            *oid += 1;
-            Json(PlaceOrderResponse {
-                success: true,
-                oid: Some(order_id),
-            })
-        }
+    if (req.is_buy && balance.b < req.sz) || (!req.is_buy && balance.a < req.sz) {
+        return Json(PlaceOrderResponse {
+            success: false,
+            oid: None,
+        });
     }
+    let mut oid = state.oid.lock().await;
+    let order = req.to_order(*oid);
+    let order_id = order.oid;
+    state.book.lock().await.limit(order).await;
+    *oid += 1;
+    if req.is_buy {
+        balance.b -= req.sz;
+    } else {
+        balance.a -= req.sz;
+    }
+    Json(PlaceOrderResponse {
+        success: true,
+        oid: Some(order_id),
+    })
 }
 
 async fn cancel(
