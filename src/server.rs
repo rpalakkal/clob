@@ -131,7 +131,7 @@ async fn place_order(
     let mut oid = state.oid.lock().await;
     let order = req.to_order(*oid);
     let order_id = order.oid;
-    state.book.lock().await.limit(order).await;
+    state.book.lock().await.limit(order);
     *oid += 1;
     if req.is_buy {
         balance.b -= req.sz;
@@ -149,6 +149,6 @@ async fn cancel(
     Json(req): Json<CancelRequest>,
 ) -> Json<CancelResponse> {
     let mut book = state.book.lock().await;
-    book.cancel(req.oid).await;
-    Json(CancelResponse { success: true })
+    let success = book.cancel(req.oid).is_ok();
+    Json(CancelResponse { success })
 }

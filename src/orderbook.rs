@@ -1,29 +1,17 @@
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 
 use eyre::OptionExt;
 
 use crate::order::Order;
 
-pub trait SplitFront<T> {
-    fn split_front(&mut self, at: usize) -> VecDeque<T>;
-}
-
-impl<T> SplitFront<T> for VecDeque<T> {
-    fn split_front(&mut self, at: usize) -> VecDeque<T> {
-        let mut front = self.drain(..at).collect();
-        std::mem::swap(self, &mut front);
-        front
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct OrderBook {
-    pub bids: BTreeMap<u64, VecDeque<Order>>,
-    pub asks: BTreeMap<u64, VecDeque<Order>>,
+    pub bids: BTreeMap<u64, Vec<Order>>,
+    pub asks: BTreeMap<u64, Vec<Order>>,
     pub oid_to_level: HashMap<u64, u64>,
 }
 
-fn fill_at_price_level(level: &mut VecDeque<Order>, amount: u64) -> (u64, VecDeque<Order>) {
+fn fill_at_price_level(level: &mut Vec<Order>, amount: u64) -> (u64, Vec<Order>) {
     let mut complete_fills = 0;
     let mut remaining_amount = amount;
     for order in level.iter_mut() {
@@ -36,7 +24,7 @@ fn fill_at_price_level(level: &mut VecDeque<Order>, amount: u64) -> (u64, VecDeq
             break;
         }
     }
-    let fills = level.split_front(complete_fills);
+    let fills = level.drain(..complete_fills).collect();
 
     (remaining_amount, fills)
 }
@@ -61,28 +49,28 @@ impl OrderBook {
     fn enqueue_order(&mut self, order: Order) {
         self.oid_to_level.insert(order.oid, order.limit_px);
         if order.is_buy {
-            let level = self.bids.entry(order.limit_px).or_insert(VecDeque::new());
-            level.push_back(order);
+            let level = self.bids.entry(order.limit_px).or_insert(Vec::new());
+            level.push(order);
         } else {
-            let level = self.asks.entry(order.limit_px).or_insert(VecDeque::new());
-            level.push_back(order);
+            let level = self.asks.entry(order.limit_px).or_insert(Vec::new());
+            level.push(order);
         }
     }
 
-    pub async fn limit(&mut self, order: Order) -> eyre::Result<Vec<Order>> {
+    pub fn limit(&mut self, order: Order) -> eyre::Result<Vec<Order>> {
         let mut remaining_amount = order.sz;
         let mut ask_min = self.ask_min();
         let mut bid_max = self.bid_max();
         let mut fills = vec![];
         if order.is_buy {
-            if order.limit_px > ask_min {
-                while remaining_amount > 0 && ask_min <= order.limit_px {
+            if order.limit_px >= ask_min {
+                while remaining_amount > 0 && order.limit_px >= ask_min {
                     let mut level = self.asks.get_mut(&ask_min).unwrap();
                     let (new_remaining_amount, new_fills) =
                         fill_at_price_level(&mut level, remaining_amount);
                     remaining_amount = new_remaining_amount;
                     fills.extend(new_fills);
-                    if new_remaining_amount > 0 {
+                    if level.is_empty() {
                         self.asks.remove(&ask_min);
                     }
                     if remaining_amount > 0 {
@@ -91,14 +79,14 @@ impl OrderBook {
                 }
             }
         } else {
-            if order.limit_px < bid_max {
-                while remaining_amount > 0 && bid_max >= order.limit_px {
+            if order.limit_px <= bid_max {
+                while remaining_amount > 0 && order.limit_px <= bid_max {
                     let mut level = self.bids.get_mut(&bid_max).unwrap();
                     let (new_remaining_amount, new_fills) =
                         fill_at_price_level(&mut level, remaining_amount);
                     remaining_amount = new_remaining_amount;
                     fills.extend(new_fills);
-                    if new_remaining_amount > 0 {
+                    if level.is_empty() {
                         self.bids.remove(&bid_max);
                     }
                     if remaining_amount > 0 {
@@ -117,7 +105,7 @@ impl OrderBook {
         Ok(fills)
     }
 
-    pub async fn cancel(&mut self, oid: u64) -> eyre::Result<()> {
+    pub fn cancel(&mut self, oid: u64) -> eyre::Result<()> {
         let level_price = self.oid_to_level.get(&oid).ok_or_eyre("oid not found")?;
         if self.bids.contains_key(level_price) {
             let level = self
@@ -136,5 +124,74 @@ impl OrderBook {
         }
         self.oid_to_level.remove(&oid);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! assert_bid_ask {
+        ($book:expr, $expected_bid:expr, $expected_ask:expr) => {
+            assert_eq!($book.bid_max(), $expected_bid);
+            assert_eq!($book.ask_min(), $expected_ask);
+        };
+    }
+
+    #[test]
+    fn test_bid_max() {
+        let mut book = OrderBook::default();
+        book.limit(Order::new(true, 10, 10, 1)).unwrap();
+        book.limit(Order::new(true, 20, 10, 2)).unwrap();
+        book.limit(Order::new(true, 30, 10, 3)).unwrap();
+        assert_bid_ask!(book, 30, u64::MAX);
+    }
+
+    #[test]
+    fn test_ask_min() {
+        let mut book = OrderBook::default();
+        book.limit(Order::new(false, 10, 10, 1)).unwrap();
+        book.limit(Order::new(false, 20, 10, 2)).unwrap();
+        book.limit(Order::new(false, 30, 10, 3)).unwrap();
+        assert_bid_ask!(book, 0, 10);
+    }
+
+    #[test]
+    fn test_crossing_bid_max() {
+        let mut book = OrderBook::default();
+        book.limit(Order::new(true, 10, 10, 1)).unwrap();
+        book.limit(Order::new(true, 20, 10, 2)).unwrap();
+        book.limit(Order::new(true, 30, 10, 3)).unwrap();
+        book.limit(Order::new(false, 25, 10, 5)).unwrap();
+        assert_bid_ask!(book, 20, u64::MAX);
+    }
+
+    #[test]
+    fn test_crossing_ask_min() {
+        let mut book = OrderBook::default();
+        book.limit(Order::new(false, 10, 10, 1)).unwrap();
+        book.limit(Order::new(false, 20, 10, 2)).unwrap();
+        book.limit(Order::new(false, 30, 10, 3)).unwrap();
+        book.limit(Order::new(true, 25, 10, 5)).unwrap();
+        assert_bid_ask!(book, 0, 20);
+    }
+
+    #[test]
+    fn test_resting_bid_ask() {
+        let mut book = OrderBook::default();
+        book.limit(Order::new(true, 10, 10, 1)).unwrap();
+        book.limit(Order::new(true, 20, 10, 2)).unwrap();
+        book.limit(Order::new(false, 30, 10, 3)).unwrap();
+        book.limit(Order::new(false, 25, 10, 5)).unwrap();
+        assert_bid_ask!(book, 20, 25);
+    }
+
+    #[test]
+    fn test_fill_at_price_level() {
+        let mut level = vec![Order::new(true, 10, 10, 1), Order::new(true, 10, 10, 2)];
+        let (remaining_amount, fills) = fill_at_price_level(&mut level, 10);
+        assert_eq!(remaining_amount, 0);
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].oid, 1);
     }
 }

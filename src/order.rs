@@ -17,6 +17,17 @@ pub struct Order {
     pub oid: u64,
 }
 
+impl Order {
+    pub fn new(is_buy: bool, limit_px: u64, sz: u64, oid: u64) -> Self {
+        Self {
+            is_buy,
+            limit_px,
+            sz,
+            oid,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Cancel {
     pub oid: u64,
